@@ -1,0 +1,194 @@
+# ==============================================================================
+# MANIFIESTO: 03-app-deployment.yaml
+# DESCRIPCIÓN: Despliegue de Base de Datos y Aplicación con Hardening de Seguridad
+#              (securityContext, UID 10001, Non-Root, Probes y Filesystem ReadOnly)
+# ==============================================================================
+
+# 1. DEPLOYMENT DE LA BASE DE DATOS (MONGODB)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mongo-deployment
+  namespace: practica-s12
+  labels:
+    app: mongodb
+    tier: database
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mongodb
+  template:
+    metadata:
+      labels:
+        app: mongodb
+        tier: database
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999 # UID estándar sin privilegios de la imagen oficial de Mongo
+        fsGroup: 999
+      containers:
+        - name: mongodb
+          image: mongo:6.0
+          args:
+            - "--bind_ip_all"
+          ports:
+            - containerPort: 27017
+              name: mongo-port
+          env:
+            - name: MONGO_INITDB_ROOT_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: db-secret
+                  key: MONGO_INITDB_ROOT_USERNAME
+            - name: MONGO_INITDB_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: db-secret
+                  key: MONGO_INITDB_ROOT_PASSWORD
+            - name: MONGO_INITDB_DATABASE
+              valueFrom:
+                configMapKeyRef:
+                  name: security-configmap
+                  key: DB_NAME
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            capabilities:
+              drop:
+                - ALL
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "300m"
+---
+# 2. SERVICIO INTERNO DE BASE DE DATOS (ClusterIP)
+# Corrección Escenario B: Puerto 27017 y selector alineado con app: mongodb
+apiVersion: v1
+kind: Service
+metadata:
+  name: mongo-service
+  namespace: practica-s12
+  labels:
+    app: mongodb
+    tier: database
+spec:
+  type: ClusterIP
+  selector:
+    app: mongodb
+  ports:
+    - name: mongo-port
+      protocol: TCP
+      port: 27017
+      targetPort: 27017
+---
+# 3. DEPLOYMENT DE LA APLICACIÓN (BACKEND CLOUD HARDENED)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: app-deployment
+  namespace: practica-s12
+  labels:
+    app: secure-app
+    tier: backend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: secure-app
+  template:
+    metadata:
+      labels:
+        app: secure-app
+        tier: backend
+    spec:
+      # ========================================================================
+      # HARDENING DE SEGURIDAD A NIVEL DE POD (SecurityContext)
+      # ========================================================================
+      securityContext:
+        runAsNonRoot: true      # Prevenir terminantemente ejecución como root
+        runAsUser: 10001        # Asignación estricta de UID 10001 no privilegiado
+        runAsGroup: 10001
+        fsGroup: 10001
+
+      containers:
+        - name: secure-app
+          image: busybox:latest
+          command: ["sh", "-c"]
+          args:
+            - |
+              echo "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nConnection: close\r\n\r\n<h1>Cloud Hardened App - S12 | AP9</h1><p>Status: Healthy (200 OK)</p><p>Security: UID 10001 (Non-root) | readOnlyRootFilesystem: true</p>" > /tmp/index.html
+              exec busybox httpd -f -p 3000 -h /tmp
+          ports:
+            - containerPort: 3000
+              name: http-port
+          
+          # ====================================================================
+          # INYECCIÓN CORRECTA DE VARIABLES (Corrección Escenario A)
+          # ====================================================================
+          envFrom:
+            - configMapRef:
+                name: security-configmap
+            - secretRef:
+                name: db-secret
+
+          # ====================================================================
+          # HARDENING DE SEGURIDAD A NIVEL DE CONTENEDOR
+          # ====================================================================
+          securityContext:
+            allowPrivilegeEscalation: false  # Impide escalado de privilegios
+            readOnlyRootFilesystem: true     # Sistema de archivos de solo lectura
+            capabilities:
+              drop:
+                - ALL                        # Deshabilita todas las capacidades del kernel
+
+          # ====================================================================
+          # SONDAS DE SALUD CORREGIDAS (Corrección Escenario C)
+          # ====================================================================
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 3000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 3000
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 2
+
+          # Volumen temporal en memoria para permitir escrituras en /tmp con readOnlyRootFilesystem
+          volumeMounts:
+            - name: tmp-dir
+              mountPath: /tmp
+            - name: run-dir
+              mountPath: /var/run
+            - name: cache-dir
+              mountPath: /var/cache/nginx
+
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "256Mi"
+              cpu: "250m"
+
+      volumes:
+        - name: tmp-dir
+          emptyDir: {}
+        - name: run-dir
+          emptyDir: {}
+        - name: cache-dir
+          emptyDir: {}
+

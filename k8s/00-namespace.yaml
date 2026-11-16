@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: practica-s12
+  labels:
+    name: practica-s12
+    environment: production-cloud
+    session: s12
+    course: orquestadores-y-automatizacion
+

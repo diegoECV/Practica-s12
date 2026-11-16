@@ -1,0 +1,25 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: security-configmap
+  namespace: practica-s12
+  labels:
+    app: secure-app
+    session: s12
+    security-tier: hardened
+data:
+  # Nombre DNS del servicio interno de base de datos
+  DB_HOST: "mongo-service"
+  
+  # Puerto interno de comunicación
+  DB_PORT: "27017"
+  
+  # Base de datos de producción
+  DB_NAME: "proddb"
+  
+  # Puerto de escucha del backend de aplicación
+  APP_PORT: "3000"
+  
+  # Entorno operativo
+  NODE_ENV: "production"
+
