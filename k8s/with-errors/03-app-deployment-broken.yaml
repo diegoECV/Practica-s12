@@ -1,0 +1,148 @@
+# ==============================================================================
+# MANIFIESTO CON FALLAS INYECTADAS: 03-app-deployment-broken.yaml
+# PROPÓSITO: Reproducción de los 3 escenarios críticos de falla para
+#            diagnóstico y troubleshooting en Kubernetes (S12 | AP9).
+# ==============================================================================
+
+# 1. DEPLOYMENT DE LA BASE DE DATOS (MONGODB)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mongo-deployment
+  namespace: practica-s12
+  labels:
+    app: mongodb
+    tier: database
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mongodb
+  template:
+    metadata:
+      labels:
+        app: mongodb
+        tier: database
+    spec:
+      containers:
+        - name: mongodb
+          image: mongo:6.0
+          args:
+            - "--bind_ip_all"
+          ports:
+            - containerPort: 27017
+              name: mongo-port
+          env:
+            - name: MONGO_INITDB_ROOT_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: db-secret
+                  key: MONGO_INITDB_ROOT_USERNAME
+            - name: MONGO_INITDB_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: db-secret
+                  key: MONGO_INITDB_ROOT_PASSWORD
+            - name: MONGO_INITDB_DATABASE
+              valueFrom:
+                configMapKeyRef:
+                  name: security-configmap
+                  key: DB_NAME
+---
+# 2. SERVICIO INTERNO DE BASE DE DATOS (FALLA ESCENARIO B)
+# ❌ ERROR 1: Selector "app: database-service" no coincide con la etiqueta del pod "app: mongodb"
+# ❌ ERROR 2: TargetPort 27018 no coincide con el puerto de escucha del contenedor (27017)
+apiVersion: v1
+kind: Service
+metadata:
+  name: mongo-service
+  namespace: practica-s12
+  labels:
+    app: mongodb
+    tier: database
+spec:
+  type: ClusterIP
+  selector:
+    app: database-service       # ❌ ERROR: Selector desalineado
+  ports:
+    - name: mongo-port
+      protocol: TCP
+      port: 27017
+      targetPort: 27018          # ❌ ERROR: Puerto de destino incorrecto
+---
+# 3. DEPLOYMENT DE LA APLICACIÓN (FALLAS ESCENARIO A Y C)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: app-deployment
+  namespace: practica-s12
+  labels:
+    app: secure-app
+    tier: backend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: secure-app
+  template:
+    metadata:
+      labels:
+        app: secure-app
+        tier: backend
+    spec:
+      # Sin SecurityContext estricto en la versión inicial
+      containers:
+        - name: secure-app
+          image: busybox:latest
+          command: ["sh", "-c"]
+          args:
+            - |
+              echo "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nConnection: close\r\n\r\n<h1>App Unhealthy Test</h1>" > /tmp/index.html
+              exec busybox httpd -f -p 3000 -h /tmp
+          ports:
+            - containerPort: 3000
+              name: http-port
+          
+          # ====================================================================
+          # ❌ FALLA ESCENARIO A: Inyección de clave inexistente en el Secret
+          # Dispara CreateContainerConfigError y CrashLoopBackOff
+          # ====================================================================
+          env:
+            - name: DB_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: security-configmap
+                  key: DB_HOST
+            - name: MONGO_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: db-secret
+                  key: MONGO_INITDB_ROOT_PASS   # ❌ ERROR: Clave inexistente en db-secret
+
+          # ====================================================================
+          # ❌ FALLA ESCENARIO C: Sondas de salud apuntando a endpoint inexistente
+          # Retorna HTTP 404 continuo provocando reinicios infinitos del contenedor
+          # ====================================================================
+          livenessProbe:
+            httpGet:
+              path: /invalid-health-probe       # ❌ ERROR: Ruta inexistente (404 Not Found)
+              port: 3000
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 2
+
+          readinessProbe:
+            httpGet:
+              path: /invalid-health-probe       # ❌ ERROR: Ruta inexistente (404 Not Found)
+              port: 3000
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 2
+
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "256Mi"
+              cpu: "250m"
